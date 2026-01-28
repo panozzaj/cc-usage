@@ -1,9 +1,362 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude Usage</title>
+  <script src="chart.min.js"></script>
+  <style>
+    :root {
+      --bg: #1a1a1a;
+      --card-bg: #252525;
+      --text: #e0e0e0;
+      --text-muted: #888;
+      --accent: #d97757;
+      --green: #4ade80;
+      --yellow: #facc15;
+      --orange: #fb923c;
+      --red: #f87171;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 20px;
+      color: var(--accent);
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .card-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 2rem;
+      font-weight: 600;
+    }
+    .card-sub {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .chart-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .chart-title {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+    .time-select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid #444;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .status-green { background: var(--green); }
+    .status-yellow { background: var(--yellow); }
+    .status-orange { background: var(--orange); }
+    .status-red { background: var(--red); }
+    .footer {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-align: center;
+      margin-top: 16px;
+    }
+    .refresh-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .refresh-btn:hover {
+      opacity: 0.9;
+    }
+    .refresh-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .error {
+      background: rgba(248, 113, 113, 0.2);
+      border: 1px solid var(--red);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 0.85rem;
+    }
+  </style>
 </head>
 <body>
-  <p>This is a menu bar app. Check the menu bar icon.</p>
+  <div id="loading" style="text-align: center; padding: 40px; color: #888;">Loading...</div>
+  <div id="content" style="display: none;">
+  <h1>Claude Code Usage</h1>
+
+  <div id="error-container"></div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-label">Session (4h)</div>
+      <div class="card-value" id="session-pct">--%</div>
+      <div class="card-sub" id="session-reset">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Weekly (All)</div>
+      <div class="card-value" id="weekly-pct">--%</div>
+      <div class="card-sub" id="weekly-reset">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Weekly (Sonnet)</div>
+      <div class="card-value" id="sonnet-pct">--%</div>
+      <div class="card-sub" id="sonnet-reset">--</div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <div class="chart-header">
+      <span class="chart-title">Usage History</span>
+      <select class="time-select" id="time-range">
+        <option value="1">Last 24 hours</option>
+        <option value="7" selected>Last 7 days</option>
+        <option value="30">Last 30 days</option>
+      </select>
+    </div>
+    <div style="position: relative; height: 250px;">
+      <canvas id="usage-chart"></canvas>
+    </div>
+  </div>
+
+  <div style="text-align: center;">
+    <button class="refresh-btn" id="refresh-btn">Refresh Now</button>
+  </div>
+
+  <div class="footer">
+    <span id="last-updated">--</span>
+  </div>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    let chart = null;
+
+    function getStatusClass(percent) {
+      if (percent >= 90) return 'status-red';
+      if (percent >= 75) return 'status-orange';
+      if (percent >= 50) return 'status-yellow';
+      return 'status-green';
+    }
+
+    function formatReset(resetStr) {
+      if (!resetStr) return '--';
+      return resetStr;
+    }
+
+    async function loadCurrentUsage() {
+      try {
+        const data = await invoke('get_current_usage');
+
+        const sessionPct = data.session?.percent ?? '--';
+        const weeklyPct = data.weekly_all?.percent ?? '--';
+        const sonnetPct = data.weekly_sonnet?.percent ?? '--';
+
+        document.getElementById('session-pct').innerHTML =
+          `<span class="status-dot ${getStatusClass(sessionPct)}"></span>${sessionPct}%`;
+        document.getElementById('weekly-pct').innerHTML =
+          `<span class="status-dot ${getStatusClass(weeklyPct)}"></span>${weeklyPct}%`;
+        document.getElementById('sonnet-pct').innerHTML =
+          `<span class="status-dot ${getStatusClass(sonnetPct)}"></span>${sonnetPct}%`;
+
+        document.getElementById('session-reset').textContent = formatReset(data.session?.resets);
+        document.getElementById('weekly-reset').textContent = formatReset(data.weekly_all?.resets);
+        document.getElementById('sonnet-reset').textContent = formatReset(data.weekly_sonnet?.resets);
+
+        if (data.timestamp) {
+          const ts = new Date(data.timestamp);
+          document.getElementById('last-updated').textContent =
+            `Last updated: ${ts.toLocaleTimeString()}`;
+        }
+
+        if (data.error) {
+          document.getElementById('error-container').innerHTML =
+            `<div class="error">${data.error}</div>`;
+        } else {
+          document.getElementById('error-container').innerHTML = '';
+        }
+      } catch (e) {
+        console.error('Failed to load usage:', e);
+      }
+    }
+
+    async function loadHistory() {
+      try {
+        const days = parseInt(document.getElementById('time-range').value);
+        const history = await invoke('get_history', { days });
+
+        if (!history || history.length < 2) {
+          document.getElementById('usage-chart').parentElement.innerHTML =
+            '<p style="color: #888; text-align: center; padding: 40px 0;">Not enough data yet. Check back after a few refresh cycles.</p>';
+          return;
+        }
+
+        const labels = history.map(h => {
+          const d = new Date(h.timestamp);
+          if (days === 1) {
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          }
+          return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        });
+
+        const sessionData = history.map(h => h.session_percent);
+        const weeklyData = history.map(h => h.weekly_percent);
+
+        if (chart) {
+          chart.data.labels = labels;
+          chart.data.datasets[0].data = sessionData;
+          chart.data.datasets[1].data = weeklyData;
+          chart.update();
+        } else {
+          const ctx = document.getElementById('usage-chart').getContext('2d');
+          chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: labels,
+              datasets: [
+                {
+                  label: 'Session %',
+                  data: sessionData,
+                  borderColor: '#d97757',
+                  backgroundColor: 'rgba(217, 119, 87, 0.1)',
+                  tension: 0.3,
+                  fill: true
+                },
+                {
+                  label: 'Weekly %',
+                  data: weeklyData,
+                  borderColor: '#4ade80',
+                  backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                  tension: 0.3,
+                  fill: true
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: true,
+              aspectRatio: 2,
+              animation: false,
+              plugins: {
+                legend: {
+                  position: 'bottom',
+                  labels: { color: '#888' }
+                }
+              },
+              scales: {
+                x: {
+                  ticks: { color: '#888', maxTicksLimit: 8 },
+                  grid: { color: 'rgba(255,255,255,0.1)' }
+                },
+                y: {
+                  min: 0,
+                  max: 100,
+                  ticks: { color: '#888' },
+                  grid: { color: 'rgba(255,255,255,0.1)' }
+                }
+              }
+            }
+          });
+        }
+      } catch (e) {
+        console.error('Failed to load history:', e);
+      }
+    }
+
+    async function refresh() {
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true;
+      btn.textContent = 'Refreshing...';
+
+      try {
+        await invoke('refresh_usage');
+        await loadCurrentUsage();
+        await loadHistory();
+      } catch (e) {
+        console.error('Refresh failed:', e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Refresh Now';
+      }
+    }
+
+    // Initial load with smart default
+    document.addEventListener('DOMContentLoaded', async () => {
+      await loadCurrentUsage();
+
+      // Check if we have more than 24h of data to decide default view
+      const history = await invoke('get_history', { days: 7 });
+      if (history && history.length > 0) {
+        const oldest = new Date(history[0].timestamp);
+        const now = new Date();
+        const hoursOfData = (now - oldest) / (1000 * 60 * 60);
+        if (hoursOfData < 24) {
+          document.getElementById('time-range').value = '1';
+        }
+      }
+
+      await loadHistory();
+
+      // Hide loading, show content
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+    });
+
+    // Event listeners
+    document.getElementById('refresh-btn').addEventListener('click', refresh);
+    document.getElementById('time-range').addEventListener('change', loadHistory);
+
+    // Auto-refresh display every 30 seconds
+    setInterval(loadCurrentUsage, 30000);
+  </script>
 </body>
 </html>

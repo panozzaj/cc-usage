@@ -5,9 +5,10 @@
   "identifier": "com.panozzaj.claude-usage-bar",
   "build": {
     "frontendDist": "../dist",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build:frontend"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [],
     "security": {
       "csp": null

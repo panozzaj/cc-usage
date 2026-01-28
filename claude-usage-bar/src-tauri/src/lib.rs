@@ -1,3 +1,4 @@
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -8,10 +9,11 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Runtime,
+    Manager, Runtime, WebviewWindowBuilder,
 };
 
 const CACHE_FILE: &str = ".claude/usage-bar-cache.json";
+const DB_FILE: &str = ".claude/usage-bar.db";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct UsageData {
@@ -57,6 +59,154 @@ fn save_cached_usage(usage: &UsageData) {
     if let Ok(json) = serde_json::to_string_pretty(usage) {
         let _ = fs::write(path, json);
     }
+}
+
+// Database functions
+fn get_db_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(DB_FILE)
+}
+
+fn init_db() -> Result<Connection, rusqlite::Error> {
+    let path = get_db_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let conn = Connection::open(&path)?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS usage_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_percent INTEGER,
+            session_resets TEXT,
+            weekly_percent INTEGER,
+            weekly_resets TEXT,
+            sonnet_percent INTEGER,
+            sonnet_resets TEXT
+        )",
+        [],
+    )?;
+
+    // Create index on timestamp for faster queries
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_history(timestamp)",
+        [],
+    )?;
+
+    Ok(conn)
+}
+
+fn save_to_db(usage: &UsageData) {
+    if let Ok(conn) = init_db() {
+        let timestamp = usage.timestamp.as_deref().unwrap_or("");
+        let _ = conn.execute(
+            "INSERT INTO usage_history (timestamp, session_percent, session_resets, weekly_percent, weekly_resets, sonnet_percent, sonnet_resets)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                timestamp,
+                usage.session.percent,
+                usage.session.resets,
+                usage.weekly_all.percent,
+                usage.weekly_all.resets,
+                usage.weekly_sonnet.percent,
+                usage.weekly_sonnet.resets,
+            ],
+        );
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UsageHistoryRow {
+    timestamp: String,
+    session_percent: Option<i32>,
+    weekly_percent: Option<i32>,
+    sonnet_percent: Option<i32>,
+}
+
+fn get_usage_history(days: i32) -> Vec<UsageHistoryRow> {
+    let mut results = Vec::new();
+
+    if let Ok(conn) = init_db() {
+        let cutoff = chrono::Local::now() - chrono::Duration::days(days as i64);
+        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+        let mut stmt = conn.prepare(
+            "SELECT timestamp, session_percent, weekly_percent, sonnet_percent
+             FROM usage_history
+             WHERE timestamp >= ?1
+             ORDER BY timestamp ASC"
+        ).ok();
+
+        if let Some(ref mut stmt) = stmt {
+            let rows = stmt.query_map(params![cutoff_str], |row| {
+                Ok(UsageHistoryRow {
+                    timestamp: row.get(0)?,
+                    session_percent: row.get(1)?,
+                    weekly_percent: row.get(2)?,
+                    sonnet_percent: row.get(3)?,
+                })
+            });
+
+            if let Ok(rows) = rows {
+                for row in rows.flatten() {
+                    results.push(row);
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// Tauri commands for frontend
+#[tauri::command]
+fn get_current_usage(state: tauri::State<'_, Arc<Mutex<AppState>>>) -> UsageData {
+    let state = state.lock().unwrap();
+    state.usage.clone()
+}
+
+#[tauri::command]
+fn get_history(days: i32) -> Vec<UsageHistoryRow> {
+    get_usage_history(days)
+}
+
+#[tauri::command]
+async fn refresh_usage(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    app: tauri::AppHandle,
+) -> Result<UsageData, String> {
+    // Run fetch in background thread to avoid blocking UI
+    let data = tokio::task::spawn_blocking(fetch_usage)
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?;
+
+    let mut app_state = state.lock().unwrap();
+
+    if data.error.is_none() {
+        save_cached_usage(&data);
+        save_to_db(&data);
+        app_state.usage = data.clone();
+        app_state.last_error = None;
+    } else {
+        app_state.last_error = data.error.clone();
+    }
+
+    // Update tray
+    let title = get_tray_title(&app_state);
+    let state_clone = app_state.clone();
+    drop(app_state);
+
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_title(Some(&title));
+        if let Ok(menu) = build_menu(&app, &state_clone) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+
+    Ok(data)
 }
 
 fn get_usage_script() -> String {
@@ -271,20 +421,6 @@ fn format_time_remaining(resets: &str) -> String {
     }
 }
 
-// Calculate time-based status indicator
-// If usage % is higher than time elapsed %, you're over-pace
-fn get_status_indicator_simple(percent: i32) -> &'static str {
-    if percent >= 90 {
-        "🔴"
-    } else if percent >= 75 {
-        "🟠"
-    } else if percent >= 50 {
-        "🟡"
-    } else {
-        "🟢"
-    }
-}
-
 // Get status based on usage vs time elapsed
 // period_hours: total period length (4 for session, 168 for week)
 fn get_status_indicator_paced(usage_percent: i32, resets: Option<&str>, period_hours: i32) -> &'static str {
@@ -394,6 +530,9 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, state: &AppState) -> tauri:
     // Separator and actions
     menu.append(&MenuItem::new(app, "─────────────", false, None::<&str>)?)?;
 
+    let charts = MenuItem::with_id(app, "charts", "Show Charts...", true, None::<&str>)?;
+    menu.append(&charts)?;
+
     let refresh = MenuItem::with_id(app, "refresh", "Refresh Now", true, None::<&str>)?;
     menu.append(&refresh)?;
 
@@ -439,6 +578,8 @@ pub fn run() {
             // Another instance tried to start - we could focus window here if we had one
             // For tray-only app, just ignore
         }))
+        .manage(app_state.clone())
+        .invoke_handler(tauri::generate_handler![get_current_usage, get_history, refresh_usage])
         .setup(move |app| {
             let handle = app.handle().clone();
             let state_for_tray = app_state.clone();
@@ -462,24 +603,56 @@ pub fn run() {
                         "quit" => {
                             app.exit(0);
                         }
-                        "refresh" => {
-                            let data = fetch_usage();
-                            let mut state = state_for_menu.lock().unwrap();
-                            if let Some(ref err) = data.error {
-                                state.last_error = Some(err.clone());
+                        "charts" => {
+                            // Open or focus the usage window
+                            if let Some(window) = app.get_webview_window("usage") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
                             } else {
-                                save_cached_usage(&data);
-                                state.usage = data;
-                                state.last_error = None;
-                                state.consecutive_errors = 0;
-                            }
-                            // Update menu
-                            if let Some(tray) = app.tray_by_id("main") {
-                                let _ = tray.set_title(Some(&get_tray_title(&state)));
-                                if let Ok(menu) = build_menu(app, &state) {
-                                    let _ = tray.set_menu(Some(menu));
+                                if let Ok(window) = WebviewWindowBuilder::new(
+                                    app,
+                                    "usage",
+                                    tauri::WebviewUrl::App("index.html".into())
+                                )
+                                .title("Claude Usage")
+                                .inner_size(700.0, 700.0)
+                                .resizable(true)
+                                .build() {
+                                    // Hide window on close instead of destroying
+                                    let window_clone = window.clone();
+                                    window.on_window_event(move |event| {
+                                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                                            api.prevent_close();
+                                            let _ = window_clone.hide();
+                                        }
+                                    });
                                 }
                             }
+                        }
+                        "refresh" => {
+                            // Run fetch in background to avoid blocking UI
+                            let state_clone = state_for_menu.clone();
+                            let app_handle = app.clone();
+                            std::thread::spawn(move || {
+                                let data = fetch_usage();
+                                let mut state = state_clone.lock().unwrap();
+                                if let Some(ref err) = data.error {
+                                    state.last_error = Some(err.clone());
+                                } else {
+                                    save_cached_usage(&data);
+                                    save_to_db(&data);
+                                    state.usage = data;
+                                    state.last_error = None;
+                                    state.consecutive_errors = 0;
+                                }
+                                // Update menu
+                                if let Some(tray) = app_handle.tray_by_id("main") {
+                                    let _ = tray.set_title(Some(&get_tray_title(&state)));
+                                    if let Ok(menu) = build_menu(&app_handle, &state) {
+                                        let _ = tray.set_menu(Some(menu));
+                                    }
+                                }
+                            });
                         }
                         _ => {}
                     }
@@ -515,6 +688,7 @@ pub fn run() {
                         state.has_network = !err.contains("No network");
                     } else {
                         save_cached_usage(&data);
+                        save_to_db(&data);
                         state.usage = data;
                         state.last_error = None;
                         state.consecutive_errors = 0;
@@ -540,9 +714,195 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+// Test-specific database functions that use a custom path
+#[cfg(test)]
+fn init_test_db(path: &std::path::Path) -> Result<Connection, rusqlite::Error> {
+    let conn = Connection::open(path)?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS usage_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_percent INTEGER,
+            session_resets TEXT,
+            weekly_percent INTEGER,
+            weekly_resets TEXT,
+            sonnet_percent INTEGER,
+            sonnet_resets TEXT
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_history(timestamp)",
+        [],
+    )?;
+    Ok(conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_db_init_creates_table() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_db_{}.db", std::process::id()));
+
+        // Clean up if exists
+        let _ = fs::remove_file(&db_path);
+
+        let conn = init_test_db(&db_path).expect("Should create database");
+
+        // Check table exists
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='usage_history'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "Table should exist");
+
+        // Clean up
+        drop(conn);
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_db_save_and_retrieve() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_db_save_{}.db", std::process::id()));
+
+        // Clean up if exists
+        let _ = fs::remove_file(&db_path);
+
+        let conn = init_test_db(&db_path).expect("Should create database");
+
+        // Insert test data
+        let usage = UsageData {
+            timestamp: Some("2026-01-28T14:00:00".to_string()),
+            session: UsageItem {
+                percent: Some(25),
+                resets: Some("3pm".to_string()),
+            },
+            weekly_all: UsageItem {
+                percent: Some(50),
+                resets: Some("Jan 29 at 5pm".to_string()),
+            },
+            weekly_sonnet: UsageItem {
+                percent: Some(10),
+                resets: None,
+            },
+            error: None,
+        };
+
+        conn.execute(
+            "INSERT INTO usage_history (timestamp, session_percent, session_resets, weekly_percent, weekly_resets, sonnet_percent, sonnet_resets)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                usage.timestamp,
+                usage.session.percent,
+                usage.session.resets,
+                usage.weekly_all.percent,
+                usage.weekly_all.resets,
+                usage.weekly_sonnet.percent,
+                usage.weekly_sonnet.resets,
+            ],
+        ).expect("Should insert");
+
+        // Query back
+        let row: (String, Option<i32>, Option<i32>) = conn
+            .query_row(
+                "SELECT timestamp, session_percent, weekly_percent FROM usage_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("Should query");
+
+        assert_eq!(row.0, "2026-01-28T14:00:00");
+        assert_eq!(row.1, Some(25));
+        assert_eq!(row.2, Some(50));
+
+        // Clean up
+        drop(conn);
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_db_history_query_filters_by_date() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_db_filter_{}.db", std::process::id()));
+
+        let _ = fs::remove_file(&db_path);
+
+        let conn = init_test_db(&db_path).expect("Should create database");
+
+        // Insert old data (8 days ago)
+        conn.execute(
+            "INSERT INTO usage_history (timestamp, session_percent, weekly_percent, sonnet_percent) VALUES (?1, ?2, ?3, ?4)",
+            params!["2026-01-20T10:00:00", 10, 20, 0],
+        ).unwrap();
+
+        // Insert recent data (today)
+        let now = chrono::Local::now();
+        let today_ts = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO usage_history (timestamp, session_percent, weekly_percent, sonnet_percent) VALUES (?1, ?2, ?3, ?4)",
+            params![today_ts, 30, 40, 5],
+        ).unwrap();
+
+        // Query last 7 days
+        let cutoff = now - chrono::Duration::days(7);
+        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+        let mut stmt = conn.prepare(
+            "SELECT timestamp, session_percent, weekly_percent, sonnet_percent FROM usage_history WHERE timestamp >= ?1"
+        ).unwrap();
+
+        let rows: Vec<UsageHistoryRow> = stmt
+            .query_map(params![cutoff_str], |row| {
+                Ok(UsageHistoryRow {
+                    timestamp: row.get(0)?,
+                    session_percent: row.get(1)?,
+                    weekly_percent: row.get(2)?,
+                    sonnet_percent: row.get(3)?,
+                })
+            })
+            .unwrap()
+            .flatten()
+            .collect();
+
+        // Should only have 1 row (today's), not the old one
+        assert_eq!(rows.len(), 1, "Should filter out old data");
+        assert_eq!(rows[0].session_percent, Some(30));
+
+        drop(stmt);
+        drop(conn);
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_usage_data_serialization() {
+        let usage = UsageData {
+            timestamp: Some("2026-01-28T14:00:00".to_string()),
+            session: UsageItem {
+                percent: Some(25),
+                resets: Some("3pm".to_string()),
+            },
+            weekly_all: UsageItem {
+                percent: Some(50),
+                resets: Some("Jan 29 at 5pm".to_string()),
+            },
+            weekly_sonnet: UsageItem::default(),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&usage).expect("Should serialize");
+        let parsed: UsageData = serde_json::from_str(&json).expect("Should deserialize");
+
+        assert_eq!(parsed.session.percent, Some(25));
+        assert_eq!(parsed.weekly_all.percent, Some(50));
+    }
 
     #[test]
     fn test_relative_time_parsing() {
