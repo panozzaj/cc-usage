@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+src-tauri/target/
+dist/
+
+# Logs
+*.log
+tmp-build.log
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Tauri
+src-tauri/Cargo.lock

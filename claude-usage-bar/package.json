@@ -1,0 +1,16 @@
+{
+  "name": "claude-usage-bar",
+  "version": "1.0.0",
+  "description": "Menu bar app showing Claude Code usage",
+  "scripts": {
+    "build": "echo 'Frontend ready'",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build:app": "tauri build"
+  },
+  "author": "Anthony Panozzo",
+  "license": "MIT",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.6"
+  }
+}
