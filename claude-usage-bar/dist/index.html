@@ -140,16 +140,19 @@
       <div class="card-label">Session (4h)</div>
       <div class="card-value" id="session-pct">--%</div>
       <div class="card-sub" id="session-reset">--</div>
+      <div class="card-sub" id="session-remaining"></div>
     </div>
     <div class="card">
       <div class="card-label">Weekly (All)</div>
       <div class="card-value" id="weekly-pct">--%</div>
       <div class="card-sub" id="weekly-reset">--</div>
+      <div class="card-sub" id="weekly-remaining"></div>
     </div>
     <div class="card">
       <div class="card-label">Weekly (Sonnet)</div>
       <div class="card-value" id="sonnet-pct">--%</div>
       <div class="card-sub" id="sonnet-reset">--</div>
+      <div class="card-sub" id="sonnet-remaining"></div>
     </div>
   </div>
 
@@ -180,6 +183,26 @@
     const { invoke } = window.__TAURI__.core;
 
     let chart = null;
+    let lastUpdateTime = null;
+
+    function formatRelativeTime(date) {
+      const now = new Date();
+      const diffMs = now - date;
+      const secs = Math.floor(diffMs / 1000);
+      const mins = Math.floor(secs / 60);
+      const hours = Math.floor(mins / 60);
+
+      if (hours > 0) return `${hours}h ${mins % 60}m ago`;
+      if (mins > 0) return `${mins}m ${secs % 60}s ago`;
+      return `${secs}s ago`;
+    }
+
+    function updateLastUpdatedDisplay() {
+      if (lastUpdateTime) {
+        document.getElementById('last-updated').textContent =
+          `Last updated: ${formatRelativeTime(lastUpdateTime)}`;
+      }
+    }
 
     function getStatusClass(percent) {
       if (percent >= 90) return 'status-red';
@@ -191,6 +214,64 @@
     function formatReset(resetStr) {
       if (!resetStr) return '--';
       return resetStr;
+    }
+
+    function parseResetTime(resetStr) {
+      if (!resetStr) return null;
+      const now = new Date();
+
+      if (resetStr.includes(' at ')) {
+        // "Jan 29 at 5:59pm"
+        const [dateStr, timeStr] = resetStr.split(' at ');
+        const [monthStr, day] = dateStr.split(' ');
+        const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+        const month = months[monthStr.toLowerCase()];
+        const time = parseTime(timeStr);
+        if (time && month !== undefined) {
+          let year = now.getFullYear();
+          if (month < now.getMonth() || (month === now.getMonth() && parseInt(day) < now.getDate())) {
+            year++;
+          }
+          return new Date(year, month, parseInt(day), time.hours, time.minutes);
+        }
+      } else {
+        // "2:59pm"
+        const time = parseTime(resetStr);
+        if (time) {
+          const result = new Date(now.getFullYear(), now.getMonth(), now.getDate(), time.hours, time.minutes);
+          if (result < now) result.setDate(result.getDate() + 1);
+          return result;
+        }
+      }
+      return null;
+    }
+
+    function parseTime(str) {
+      const match = str.match(/(\d+):?(\d*)([ap]m)/i);
+      if (!match) return null;
+      let hours = parseInt(match[1]);
+      const minutes = match[2] ? parseInt(match[2]) : 0;
+      const isPm = match[3].toLowerCase() === 'pm';
+      if (isPm && hours !== 12) hours += 12;
+      if (!isPm && hours === 12) hours = 0;
+      return { hours, minutes };
+    }
+
+    function formatTimeRemaining(resetStr) {
+      const resetTime = parseResetTime(resetStr);
+      if (!resetTime) return '';
+      const now = new Date();
+      const diffMs = resetTime - now;
+      if (diffMs <= 0) return '';
+
+      const hours = Math.floor(diffMs / (1000 * 60 * 60));
+      const days = Math.floor(hours / 24);
+      const remainingHours = hours % 24;
+
+      if (days > 0) return `${days}d ${remainingHours}h left`;
+      if (hours > 0) return `${hours}h left`;
+      const mins = Math.floor(diffMs / (1000 * 60));
+      return mins > 0 ? `${mins}m left` : 'soon';
     }
 
     async function loadCurrentUsage() {
@@ -212,10 +293,13 @@
         document.getElementById('weekly-reset').textContent = formatReset(data.weekly_all?.resets);
         document.getElementById('sonnet-reset').textContent = formatReset(data.weekly_sonnet?.resets);
 
+        document.getElementById('session-remaining').textContent = formatTimeRemaining(data.session?.resets);
+        document.getElementById('weekly-remaining').textContent = formatTimeRemaining(data.weekly_all?.resets);
+        document.getElementById('sonnet-remaining').textContent = formatTimeRemaining(data.weekly_sonnet?.resets);
+
         if (data.timestamp) {
-          const ts = new Date(data.timestamp);
-          document.getElementById('last-updated').textContent =
-            `Last updated: ${ts.toLocaleTimeString()}`;
+          lastUpdateTime = new Date(data.timestamp);
+          updateLastUpdatedDisplay();
         }
 
         if (data.error) {
@@ -357,6 +441,9 @@
 
     // Auto-refresh display every 30 seconds
     setInterval(loadCurrentUsage, 30000);
+
+    // Update relative time display every second
+    setInterval(updateLastUpdatedDisplay, 1000);
   </script>
 </body>
 </html>
