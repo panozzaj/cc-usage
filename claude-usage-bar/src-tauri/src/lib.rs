@@ -14,6 +14,7 @@ use tauri::{
 
 const CACHE_FILE: &str = ".claude/usage-bar-cache.json";
 const DB_FILE: &str = ".claude/usage-bar.db";
+const SETTINGS_FILE: &str = ".claude/usage-bar-settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct UsageData {
@@ -37,12 +38,42 @@ struct AppState {
     last_error: Option<String>,
     has_network: bool,
     consecutive_errors: u32,
+    show_percentages: bool,
 }
 
 fn get_cache_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(CACHE_FILE)
+}
+
+fn get_settings_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(SETTINGS_FILE)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Settings {
+    show_percentages: Option<bool>,
+}
+
+fn load_settings() -> Settings {
+    let path = get_settings_path();
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(settings: &Settings) {
+    let path = get_settings_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(settings) {
+        let _ = fs::write(path, json);
+    }
 }
 
 fn load_cached_usage() -> Option<UsageData> {
@@ -540,6 +571,15 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, state: &AppState) -> tauri:
     let refresh = MenuItem::with_id(app, "refresh", "Refresh Now", true, None::<&str>)?;
     menu.append(&refresh)?;
 
+    // Toggle for showing percentages in menu bar
+    let toggle_label = if state.show_percentages {
+        "✓ Show Percentages in Menu Bar"
+    } else {
+        "  Show Percentages in Menu Bar"
+    };
+    let toggle = MenuItem::with_id(app, "toggle_percentages", toggle_label, true, None::<&str>)?;
+    menu.append(&toggle)?;
+
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     menu.append(&quit)?;
 
@@ -550,11 +590,16 @@ fn get_tray_title(state: &AppState) -> String {
     if state.last_error.is_some() {
         "⚠️".to_string()
     } else if state.usage.session.percent.is_some() {
-        format!(
-            "{}% {}%",
-            state.usage.session.percent.unwrap_or(0),
-            state.usage.weekly_all.percent.unwrap_or(0)
-        )
+        if state.show_percentages {
+            format!(
+                "{}% {}%",
+                state.usage.session.percent.unwrap_or(0),
+                state.usage.weekly_all.percent.unwrap_or(0)
+            )
+        } else {
+            // Just show icon (the tray icon), no text
+            String::new()
+        }
     } else {
         "...".to_string()
     }
@@ -568,12 +613,14 @@ fn load_tray_icon() -> Image<'static> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load cached data on startup
+    // Load cached data and settings on startup
     let initial_usage = load_cached_usage().unwrap_or_default();
+    let settings = load_settings();
 
     let app_state: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState {
         usage: initial_usage,
         has_network: true,
+        show_percentages: settings.show_percentages.unwrap_or(true),
         ..Default::default()
     }));
 
@@ -606,6 +653,24 @@ pub fn run() {
                     match event.id.as_ref() {
                         "quit" => {
                             app.exit(0);
+                        }
+                        "toggle_percentages" => {
+                            let state_arc: tauri::State<'_, Arc<Mutex<AppState>>> = app.state();
+                            let mut state = state_arc.lock().unwrap();
+                            state.show_percentages = !state.show_percentages;
+
+                            // Save setting
+                            save_settings(&Settings {
+                                show_percentages: Some(state.show_percentages),
+                            });
+
+                            // Update tray title and menu
+                            if let Some(tray) = app.tray_by_id("main") {
+                                let _ = tray.set_title(Some(&get_tray_title(&state)));
+                                if let Ok(menu) = build_menu(app, &state) {
+                                    let _ = tray.set_menu(Some(menu));
+                                }
+                            }
                         }
                         "charts" => {
                             // Open or focus the usage window
