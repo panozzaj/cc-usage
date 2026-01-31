@@ -17,3 +17,6 @@ tmp-build.log
 
 # Tauri
 src-tauri/Cargo.lock
+
+# Temp files
+tmp/
