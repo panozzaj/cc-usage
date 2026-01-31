@@ -298,9 +298,13 @@ fn fetch_usage() -> UsageData {
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            serde_json::from_str(&stdout).unwrap_or_else(|_| UsageData {
-                error: Some("Failed to parse JSON".to_string()),
-                ..Default::default()
+            serde_json::from_str(&stdout).unwrap_or_else(|e| {
+                // Truncate for display (first 200 chars)
+                let preview: String = stdout.chars().take(200).collect();
+                UsageData {
+                    error: Some(format!("Failed to parse JSON: {} | Output: {}", e, preview)),
+                    ..Default::default()
+                }
             })
         }
         Ok(out) => UsageData {
