@@ -573,9 +573,9 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, state: &AppState) -> tauri:
 
     // Toggle for showing percentages in menu bar
     let toggle_label = if state.show_percentages {
-        "✓ Show Percentages in Menu Bar"
+        "Hide Percentages in Menu Bar"
     } else {
-        "  Show Percentages in Menu Bar"
+        "Show Percentages in Menu Bar"
     };
     let toggle = MenuItem::with_id(app, "toggle_percentages", toggle_label, true, None::<&str>)?;
     menu.append(&toggle)?;
