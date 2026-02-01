@@ -13,6 +13,8 @@ npm run link     # Create symlink: /Applications/Claude Usage.app -> build outpu
 npm run dev      # Tauri dev mode with hot reload
 ```
 
+Always run `npm run restart` after making code changes.
+
 ## Setup
 
 1. Build once: `npm run build:app`
