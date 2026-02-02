@@ -12,9 +12,9 @@ use tauri::{
     Manager, Runtime, WebviewWindowBuilder,
 };
 
-const CACHE_FILE: &str = ".claude/usage-bar-cache.json";
-const DB_FILE: &str = ".claude/usage-bar.db";
-const SETTINGS_FILE: &str = ".claude/usage-bar-settings.json";
+const CACHE_FILE: &str = ".claude/cc-usage-cache.json";
+const DB_FILE: &str = ".claude/cc-usage.db";
+const SETTINGS_FILE: &str = ".claude/cc-usage-settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct UsageData {

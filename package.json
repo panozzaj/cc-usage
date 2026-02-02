@@ -1,5 +1,5 @@
 {
-  "name": "claude-usage-bar",
+  "name": "cc-usage",
   "version": "1.0.0",
   "description": "Menu bar app showing Claude Code usage",
   "scripts": {
@@ -8,7 +8,7 @@
     "dev": "tauri dev",
     "build": "tauri build --bundles app",
     "build:dmg": "tauri build",
-    "kill": "pkill -x claude-usage-bar || true",
+    "kill": "pkill -x cc-usage || true",
     "open": "open 'src-tauri/target/release/bundle/macos/Claude Usage.app'",
     "open:dmg": "open 'src-tauri/target/release/bundle/dmg/Claude Usage_0.1.0_aarch64.dmg'",
     "restart": "npm run kill && npm run build && npm run open",

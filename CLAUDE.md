@@ -1,4 +1,4 @@
-# Claude Usage Bar
+# CC Usage
 
 macOS menu bar app showing Claude Code usage statistics.
 
@@ -34,8 +34,8 @@ cd src-tauri && cargo test
 - **Tauri 2.x** - Rust backend with web frontend
 - **src-tauri/src/lib.rs** - Main Rust code (tray, menu, data fetching, SQLite)
 - **dist/index.html** - Web UI with Chart.js for usage graphs
-- **~/.claude/usage-bar-cache.json** - Cached usage data
-- **~/.claude/usage-bar.db** - SQLite database for historical data
+- **~/.claude/cc-usage-cache.json** - Cached usage data
+- **~/.claude/cc-usage.db** - SQLite database for historical data
 
 ## Data Fetching
 

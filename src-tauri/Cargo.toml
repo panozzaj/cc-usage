@@ -1,5 +1,5 @@
 [package]
-name = "claude-usage-bar"
+name = "cc-usage"
 version = "0.1.0"
 description = "Menu bar app showing Claude Code usage"
 authors = ["Anthony Panozzo"]

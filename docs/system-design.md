@@ -1,4 +1,4 @@
-# Claude Usage Bar - System Design
+# CC Usage - System Design
 
 A macOS menu bar app that displays Claude Code usage statistics.
 
@@ -22,7 +22,7 @@ This app shows real-time Claude Code usage in the macOS menu bar, including:
 **Components:**
 - `src-tauri/src/lib.rs` - Rust backend (tray, menu, data fetching)
 - `src-tauri/icons/tray-icon.png` - Claude symbol icon
-- `~/.claude/usage-bar-cache.json` - Persisted usage data
+- `~/.claude/cc-usage-cache.json` - Persisted usage data
 
 ### Data Fetching Strategy
 
@@ -103,7 +103,7 @@ Uses the official Claude AI symbol from Wikimedia Commons, converted to 22x22 PN
 ┌─────────────────────────────────────────────────────────┐
 │                     On App Start                         │
 ├─────────────────────────────────────────────────────────┤
-│ 1. Load ~/.claude/usage-bar-cache.json (if exists)      │
+│ 1. Load ~/.claude/cc-usage-cache.json (if exists)       │
 │ 2. Display cached data immediately                       │
 │ 3. Start background fetch (gets fresh data)             │
 │ 4. Update display when fetch completes                  │
@@ -185,7 +185,7 @@ Uses the official Claude AI symbol from Wikimedia Commons, converted to 22x22 PN
 ## File Structure
 
 ```
-claude-usage-bar/
+cc-usage/
 ├── docs/
 │   └── system-design.md          # This file
 ├── dist/

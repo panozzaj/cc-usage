@@ -1,8 +1,25 @@
-# Temp files
-tmp/
+# Dependencies
+node_modules/
+
+# Build outputs
+src-tauri/target/
+
+# Logs
+*.log
+tmp-build.log
 
 # macOS
 .DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Tauri
+src-tauri/Cargo.lock
+
+# Temp files
+tmp/
 
 # Claude local settings
 .claude/settings.local.json
