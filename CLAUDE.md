@@ -41,6 +41,8 @@ cd src-tauri && cargo test
 
 Uses tmux automation to run `claude --dangerously-skip-permissions` and capture `/usage` output. Takes ~15 seconds per fetch. Runs every 10 minutes in background.
 
+One nice thing is that this does not require API keys or other credentials.
+
 ## Key Files
 
 - `src-tauri/src/lib.rs` - All Rust logic
