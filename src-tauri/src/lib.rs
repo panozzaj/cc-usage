@@ -15,12 +15,17 @@ use tauri::{
 const CACHE_FILE: &str = ".claude/cc-usage-cache.json";
 const DB_FILE: &str = ".claude/cc-usage.db";
 const SETTINGS_FILE: &str = ".claude/cc-usage-settings.json";
+const ERROR_LOG_FILE: &str = ".claude/cc-usage-last-error.txt";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct UsageData {
+    #[serde(default)]
     timestamp: Option<String>,
+    #[serde(default)]
     session: UsageItem,
+    #[serde(default)]
     weekly_all: UsageItem,
+    #[serde(default)]
     weekly_sonnet: UsageItem,
     #[serde(default)]
     error: Option<String>,
@@ -51,6 +56,28 @@ fn get_settings_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(SETTINGS_FILE)
+}
+
+fn get_error_log_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(ERROR_LOG_FILE)
+}
+
+fn save_error_log(raw_output: &str, parse_error: &str) {
+    let path = get_error_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let content = format!(
+        "=== Parse Error at {} ===\n\nError: {}\n\n=== Raw Output ({} bytes) ===\n{}\n",
+        timestamp,
+        parse_error,
+        raw_output.len(),
+        raw_output
+    );
+    let _ = fs::write(path, content);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -330,18 +357,23 @@ fn fetch_usage() -> UsageData {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             serde_json::from_str(&stdout).unwrap_or_else(|e| {
-                // Truncate for display (first 200 chars)
-                let preview: String = stdout.chars().take(200).collect();
+                let error_msg = e.to_string();
+                save_error_log(&stdout, &error_msg);
+                let error_path = get_error_log_path();
                 UsageData {
-                    error: Some(format!("Failed to parse JSON: {} | Output: {}", e, preview)),
+                    error: Some(format!("Parse error (see {})", error_path.display())),
                     ..Default::default()
                 }
             })
         }
-        Ok(out) => UsageData {
-            error: Some(format!("Script failed: {}", String::from_utf8_lossy(&out.stderr))),
-            ..Default::default()
-        },
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            save_error_log(&stderr, "Script failed");
+            UsageData {
+                error: Some(format!("Script failed: {}", stderr)),
+                ..Default::default()
+            }
+        }
         Err(e) => UsageData {
             error: Some(format!("Failed to run script: {}", e)),
             ..Default::default()
@@ -506,6 +538,12 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, state: &AppState) -> tauri:
     if let Some(ref err) = state.last_error {
         let err_text = format!("⚠️ {}", err);
         menu.append(&MenuItem::new(app, &err_text, false, None::<&str>)?)?;
+        // Add option to view error log if it exists
+        let error_log_path = get_error_log_path();
+        if error_log_path.exists() {
+            let view_error = MenuItem::with_id(app, "view_error_log", "View Error Log...", true, None::<&str>)?;
+            menu.append(&view_error)?;
+        }
         menu.append(&MenuItem::new(app, "─────────────", false, None::<&str>)?)?;
     }
 
@@ -696,6 +734,18 @@ pub fn run() {
                                         }
                                     });
                                 }
+                            }
+                        }
+                        "view_error_log" => {
+                            let error_log = get_error_log_path();
+                            if error_log.exists() {
+                                // Open the error log file with default application
+                                #[cfg(target_os = "macos")]
+                                let _ = Command::new("open").arg(&error_log).spawn();
+                                #[cfg(target_os = "linux")]
+                                let _ = Command::new("xdg-open").arg(&error_log).spawn();
+                                #[cfg(target_os = "windows")]
+                                let _ = Command::new("notepad").arg(&error_log).spawn();
                             }
                         }
                         "refresh" => {
