@@ -237,7 +237,7 @@ async fn refresh_usage(
     app: tauri::AppHandle,
 ) -> Result<UsageData, String> {
     // Run fetch in background thread to avoid blocking UI
-    let data = tokio::task::spawn_blocking(fetch_usage)
+    let data = tauri::async_runtime::spawn_blocking(fetch_usage)
         .await
         .map_err(|e| format!("Task failed: {}", e))?;
 
@@ -713,10 +713,9 @@ pub fn run() {
                         "charts" => {
                             // Open or focus the usage window
                             if let Some(window) = app.get_webview_window("usage") {
-                                let _ = window.show();
                                 let _ = window.set_focus();
                             } else {
-                                if let Ok(window) = WebviewWindowBuilder::new(
+                                let _ = WebviewWindowBuilder::new(
                                     app,
                                     "usage",
                                     tauri::WebviewUrl::App("index.html".into())
@@ -724,16 +723,7 @@ pub fn run() {
                                 .title("Claude Usage")
                                 .inner_size(700.0, 700.0)
                                 .resizable(true)
-                                .build() {
-                                    // Hide window on close instead of destroying
-                                    let window_clone = window.clone();
-                                    window.on_window_event(move |event| {
-                                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                                            api.prevent_close();
-                                            let _ = window_clone.hide();
-                                        }
-                                    });
-                                }
+                                .build();
                             }
                         }
                         "view_error_log" => {
